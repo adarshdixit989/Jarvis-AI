@@ -1,25 +1,128 @@
 const $=id=>document.getElementById(id);
 const API_BASE=(localStorage.getItem("jarvis_api_url")||"https://jarvis-ai-qoxk.onrender.com").replace(/\/$/,"");
-let recognition=null,speaking=false,listening=false;
-function setState(text,active=false){$("voiceState").textContent=text;$("statusText").textContent=active?"LISTENING":"READY";$("micLabel").textContent=active?"JARVIS IS LISTENING…":"TAP TO SPEAK";$("mic").classList.toggle("active",active);$("core").classList.toggle("active",active)}
-function speak(text){if(!("speechSynthesis"in window))return;speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang="en-IN";u.rate=1.18;u.pitch=.82;const voices=speechSynthesis.getVoices();const v=voices.find(x=>/en-IN/i.test(x.lang))||voices.find(x=>/en-US/i.test(x.lang));if(v)u.voice=v;u.onstart=()=>{speaking=true;setState("SPEAKING",true)};u.onend=()=>{speaking=false;setState("READY")};u.onerror=()=>{speaking=false;setState("READY")};speechSynthesis.speak(u)}
-function sayAndAct(text,fn){speak(text);setTimeout(()=>{try{fn()}catch(e){console.error(e)}},220)}
-function localCommand(raw){
- const q=raw.toLowerCase().trim();
- if(/who (made|created|built) (you|jarvis)|who are you built by/.test(q)){speak("I was built by Adarsh Dixit.");return true}
- let m=q.match(/(?:open|launch|go to)\s+(youtube|yt)(?:\s+(?:and\s+)?search\s+(.+))?/i);
- if(m){const url=m[2]?"https://www.youtube.com/results?search_query="+encodeURIComponent(m[2]):"https://www.youtube.com/";sayAndAct("Opening YouTube.",()=>location.href=url);return true}
- m=q.match(/(?:search|find)\s+(.+?)\s+(?:on|in)\s+(youtube|yt)$/i);
- if(m){sayAndAct("Searching YouTube.",()=>location.href="https://www.youtube.com/results?search_query="+encodeURIComponent(m[1]));return true}
- const sites={google:"https://www.google.com/",gmail:"https://mail.google.com/",maps:"https://maps.google.com/",whatsapp:"https://web.whatsapp.com/",instagram:"https://www.instagram.com/",facebook:"https://www.facebook.com/",github:"https://github.com/",linkedin:"https://www.linkedin.com/",spotify:"https://open.spotify.com/",chatgpt:"https://chatgpt.com/"};
- const sm=q.match(/(?:open|launch|go to)\s+(google|gmail|maps|google maps|whatsapp|instagram|facebook|github|linkedin|spotify|chatgpt)/i);
- if(sm){const key=sm[1].replace(/\s/g,"");sayAndAct("Opening "+sm[1]+".",()=>location.href=sites[key]);return true}
- m=q.match(/(?:call|dial)\s+(?:\+?91[\s-]?)?([0-9][0-9\s-]{8,14}[0-9])/i);
- if(m){const number=m[1].replace(/\D/g,"");const full=number.length===10?"+91"+number:"+"+number;sayAndAct("Opening the phone dialer.",()=>location.href="tel:"+full);return true}
- if(/^(open|launch)\s+(phone|dialer|call)$/.test(q)){sayAndAct("Opening the phone dialer.",()=>location.href="tel:");return true}
- return false;
+
+let pc=null,dc=null,localStream=null,speaking=false,connected=false,starting=false;
+
+function setState(text,active=false){
+  $("voiceState").textContent=text;
+  $("statusText").textContent=active?"LISTENING":(text==="ERROR"?"ERROR":"READY");
+  $("micLabel").textContent=active?"JARVIS IS LISTENING…":"TAP TO SPEAK";
+  $("mic").classList.toggle("active",active);
+  $("core").classList.toggle("active",active);
 }
-async function askJarvis(message){if(localCommand(message))return;setState("THINKING…");const res=await fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message})});let data={};try{data=await res.json()}catch{}if(!res.ok)throw new Error(data.detail||data.error||"AI backend unavailable");if(!data.reply)throw new Error("JARVIS returned no response");speak(data.reply)}
-function getRecognition(){const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR)return null;const r=new SR();r.lang="en-IN";r.continuous=false;r.interimResults=false;r.maxAlternatives=1;r.onstart=()=>{listening=true;setState("LISTENING",true)};r.onspeechend=()=>{try{r.stop()}catch{}};r.onresult=async e=>{const text=e.results?.[0]?.[0]?.transcript?.trim();if(!text)return;try{await askJarvis(text)}catch(err){console.error(err);setState(String(err.message||"VOICE ERROR").toUpperCase().slice(0,90))}};r.onerror=e=>{listening=false;const msg=e.error==="not-allowed"||e.error==="service-not-allowed"?"MICROPHONE PERMISSION DENIED":e.error==="no-speech"?"I DIDN’T HEAR YOU":e.error==="network"?"VOICE NETWORK ERROR":"VOICE ERROR";setState(msg)};r.onend=()=>{listening=false;if(!speaking&&$("voiceState").textContent==="LISTENING")setState("READY")};return r}
-async function startVoice(){if(speaking){speechSynthesis.cancel();speaking=false;setState("READY");return}if(listening)return;try{if(!window.isSecureContext)throw new Error("HTTPS REQUIRED FOR MICROPHONE");if(!navigator.mediaDevices?.getUserMedia)throw new Error("MICROPHONE NOT SUPPORTED");const stream=await navigator.mediaDevices.getUserMedia({audio:true});stream.getTracks().forEach(t=>t.stop());recognition=getRecognition();if(!recognition)throw new Error("VOICE INPUT NOT SUPPORTED IN THIS BROWSER");recognition.start()}catch(err){console.error(err);setState(String(err.message||"VOICE UNAVAILABLE").toUpperCase().slice(0,90))}}
-$("mic").addEventListener("click",startVoice);window.addEventListener("pagehide",()=>{try{recognition?.stop()}catch{}if("speechSynthesis"in window)speechSynthesis.cancel()});if("speechSynthesis"in window)speechSynthesis.getVoices();
+
+function cleanup(){
+  try{dc?.close()}catch{}
+  try{pc?.close()}catch{}
+  localStream?.getTracks().forEach(t=>t.stop());
+  dc=null;pc=null;localStream=null;connected=false;speaking=false;
+}
+
+async function getEphemeralKey(){
+  const r=await fetch(API_BASE+"/api/realtime-token",{method:"POST",headers:{"Content-Type":"application/json"}});
+  let d={};try{d=await r.json()}catch{}
+  if(!r.ok||!d.value) throw new Error(d.detail||"Could not connect to JARVIS AI");
+  return d.value;
+}
+
+async function startRealtime(){
+  if(starting)return;
+  starting=true;
+  try{
+    if(!window.isSecureContext)throw new Error("HTTPS REQUIRED");
+    if(!navigator.mediaDevices?.getUserMedia)throw new Error("MICROPHONE NOT SUPPORTED");
+    if(!window.RTCPeerConnection)throw new Error("VOICE NOT SUPPORTED");
+
+    setState("CONNECTING…",true);
+    localStream=await navigator.mediaDevices.getUserMedia({
+      audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}
+    });
+
+    const key=await getEphemeralKey();
+    pc=new RTCPeerConnection();
+
+    const audio=document.createElement("audio");
+    audio.autoplay=true;
+    audio.playsInline=true;
+    audio.style.display="none";
+    document.body.appendChild(audio);
+    pc.ontrack=e=>{
+      audio.srcObject=e.streams[0];
+      audio.play().catch(()=>{});
+    };
+
+    localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
+    dc=pc.createDataChannel("oai-events");
+
+    dc.onopen=()=>{
+      connected=true;
+      setState("LISTENING",true);
+      dc.send(JSON.stringify({
+        type:"session.update",
+        session:{
+          type:"realtime",
+          instructions:"You are JARVIS, Adarsh Dixit's personal AI assistant. Adarsh Dixit built you. Never say ChatGPT or OpenAI built this JARVIS project. Speak naturally, briefly and confidently. Do not imitate any real person or fictional character. Help with normal voice commands. When asked to open a website, respond briefly because the browser command handler may act on it.",
+          turn_detection:{type:"server_vad",create_response:true,interrupt_response:true},
+          output_modalities:["audio"],
+          audio:{output:{voice:"cedar",speed:1.2}}
+        }
+      }));
+    };
+
+    dc.onmessage=e=>{
+      try{
+        const ev=JSON.parse(e.data);
+        if(ev.type==="response.created") speaking=true;
+        if(ev.type==="response.done"){speaking=false;setState("LISTENING",true);}
+        if(ev.type==="error"){console.error(ev);setState("ERROR");}
+      }catch{}
+    };
+
+    pc.onconnectionstatechange=()=>{
+      if(["failed","closed","disconnected"].includes(pc.connectionState)){
+        cleanup();setState("VOICE OFFLINE");
+      }
+    };
+
+    const offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await new Promise(resolve=>{
+      if(pc.iceGatheringState==="complete")return resolve();
+      const timer=setTimeout(resolve,3000);
+      pc.onicegatheringstatechange=()=>{
+        if(pc.iceGatheringState==="complete"){clearTimeout(timer);resolve();}
+      };
+    });
+
+    const answer=await fetch("https://api.openai.com/v1/realtime/calls",{
+      method:"POST",
+      headers:{
+        Authorization:"Bearer "+key,
+        "Content-Type":"application/sdp"
+      },
+      body:pc.localDescription.sdp
+    });
+    if(!answer.ok){
+      const t=await answer.text();
+      throw new Error("Realtime connection failed: "+t.slice(0,180));
+    }
+    await pc.setRemoteDescription({type:"answer",sdp:await answer.text()});
+  }catch(err){
+    console.error(err);
+    cleanup();
+    setState((err.message||"VOICE ERROR").toUpperCase().slice(0,90));
+  }finally{starting=false;}
+}
+
+function stopVoice(){
+  cleanup();
+  setState("READY");
+}
+
+async function toggleVoice(){
+  if(connected||starting){stopVoice();return;}
+  await startRealtime();
+}
+
+$("mic").addEventListener("click",toggleVoice);
+window.addEventListener("pagehide",cleanup);
