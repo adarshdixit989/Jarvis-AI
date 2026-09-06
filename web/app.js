@@ -1,6 +1,6 @@
 const $=id=>document.getElementById(id);
 const messages=$("messages");
-const API_BASE=(localStorage.getItem("jarvis_api_url")||"").replace(/\/$/,"");
+const API_BASE=(localStorage.getItem("jarvis_api_url")||"https://jarvis-ai-qoxk.onrender.com").replace(/\/$/,"");
 
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
 function add(role,text){
