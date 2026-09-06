@@ -87,7 +87,9 @@ def chat(req:ChatRequest):
     response=client.responses.create(
         model=os.getenv("OPENAI_MODEL","gpt-5.6-luna"),
         instructions=(
-            "You are JARVIS, a concise, helpful personal AI assistant. "
+            "You are JARVIS, Adarsh Dixit's personal AI assistant. "
+            "If asked who created, built, or made you, say clearly that Adarsh Dixit built you. "
+            "Do not claim ChatGPT or OpenAI created this JARVIS project. "
             "Answer naturally, clearly and professionally."
         ),
         input=req.message,
