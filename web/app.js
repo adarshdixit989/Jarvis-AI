@@ -1,11 +1,10 @@
 const $=id=>document.getElementById(id);
 const API_BASE=(localStorage.getItem("jarvis_api_url")||"https://jarvis-ai-qoxk.onrender.com").replace(/\/$/,"");
 
-let rtc=null;
-let dc=null;
-let localStream=null;
-let audioEl=null;
-let voiceConnected=false;
+let recognition=null;
+let speaking=false;
+let listening=false;
+let currentAudio=null;
 
 function setState(text,active=false){
   $("voiceState").textContent=text;
@@ -15,145 +14,103 @@ function setState(text,active=false){
   $("core").classList.toggle("active",active);
 }
 
-function sendSessionConfig(){
-  if(!dc || dc.readyState!=="open") return;
-  dc.send(JSON.stringify({
-    type:"session.update",
-    session:{
-      output_modalities:["audio"],
-      instructions:"You are JARVIS, Adarsh's personal AI assistant. Speak immediately, naturally and concisely. Be calm, confident, intelligent and cinematic. Do not imitate or impersonate any real person or fictional character. Never display or provide a text transcript in the UI; communicate through audio only. Keep normal replies to one or two sentences unless Adarsh asks for detail. Talk at a brisk, natural pace.",
-      audio:{
-        output:{voice:"cedar",speed:1.2},
-        input:{
-          turn_detection:{
-            type:"server_vad",
-            create_response:true,
-            interrupt_response:true,
-            prefix_padding_ms:200,
-            silence_duration_ms:250,
-            threshold:0.5
-          }
-        }
-      },
-      max_output_tokens:500
+function speak(text){
+  if(!("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text);
+  u.lang="en-IN";
+  u.rate=1.12;
+  u.pitch=0.82;
+  const voices=speechSynthesis.getVoices();
+  const preferred=voices.find(v=>/en-IN/i.test(v.lang)&&/male|natural|neural/i.test(v.name))
+    ||voices.find(v=>/en-IN/i.test(v.lang))
+    ||voices.find(v=>/en-US/i.test(v.lang));
+  if(preferred) u.voice=preferred;
+  u.onstart=()=>{speaking=true;setState("SPEAKING",true);};
+  u.onend=()=>{speaking=false;setState("READY");};
+  u.onerror=()=>{speaking=false;setState("READY");};
+  speechSynthesis.speak(u);
+}
+
+async function askJarvis(message){
+  setState("THINKING…");
+  const res=await fetch(API_BASE+"/api/chat",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({message})
+  });
+  let data={};
+  try{data=await res.json();}catch{}
+  if(!res.ok) throw new Error(data.detail||data.error||"AI backend unavailable");
+  if(!data.reply) throw new Error("JARVIS returned no response");
+  speak(data.reply);
+}
+
+function getRecognition(){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR) return null;
+  const r=new SR();
+  r.lang="en-IN";
+  r.continuous=false;
+  r.interimResults=false;
+  r.maxAlternatives=1;
+  r.onstart=()=>{listening=true;setState("LISTENING",true);};
+  r.onspeechend=()=>{try{r.stop();}catch{}};
+  r.onresult=async e=>{
+    const text=e.results?.[0]?.[0]?.transcript?.trim();
+    if(!text) return;
+    try{
+      await askJarvis(text);
+    }catch(err){
+      console.error(err);
+      setState(String(err.message||"VOICE ERROR").slice(0,90));
     }
-  }));
+  };
+  r.onerror=e=>{
+    listening=false;
+    let msg="VOICE ERROR";
+    if(e.error==="not-allowed"||e.error==="service-not-allowed") msg="MICROPHONE PERMISSION DENIED";
+    else if(e.error==="no-speech") msg="I DIDN'T HEAR YOU";
+    else if(e.error==="network") msg="VOICE NETWORK ERROR";
+    setState(msg);
+  };
+  r.onend=()=>{
+    listening=false;
+    if(!speaking && $("voiceState").textContent==="LISTENING") setState("READY");
+  };
+  return r;
 }
 
-async function readError(res,fallback){
+async function startVoice(){
+  if(speaking){
+    speechSynthesis.cancel();
+    speaking=false;
+    setState("READY");
+    return;
+  }
+  if(listening) return;
+
   try{
-    const data=await res.json();
-    return data.detail||data.error||fallback;
-  }catch{
-    return fallback;
+    if(!window.isSecureContext) throw new Error("HTTPS REQUIRED FOR MICROPHONE");
+    if(!navigator.mediaDevices?.getUserMedia) throw new Error("MICROPHONE NOT SUPPORTED");
+
+    // Explicitly request mic permission first so Android Chrome doesn't silently fail.
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    stream.getTracks().forEach(t=>t.stop());
+
+    recognition=getRecognition();
+    if(!recognition) throw new Error("VOICE INPUT NOT SUPPORTED IN THIS BROWSER");
+
+    recognition.start();
+  }catch(err){
+    console.error(err);
+    setState(String(err.message||"VOICE UNAVAILABLE").toUpperCase().slice(0,90));
   }
 }
 
-async function startRealtimeVoice(){
-  if(voiceConnected) return;
-  try{
-    if(!window.isSecureContext) throw new Error("Microphone requires HTTPS.");
-    if(!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not support microphone access.");
-
-    setState("ALLOW MICROPHONE…");
-
-    localStream=await navigator.mediaDevices.getUserMedia({
-      audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}
-    });
-
-    setState("CONNECTING…");
-
-    const tokenRes=await fetch(API_BASE+"/api/realtime-token",{
-      method:"POST",
-      headers:{"Content-Type":"application/json"}
-    });
-    if(!tokenRes.ok) throw new Error(await readError(tokenRes,"Realtime token request failed ("+tokenRes.status+")."));
-
-    const tokenData=await tokenRes.json();
-    if(!tokenData.value) throw new Error(tokenData.error||"Realtime token was not created. Check OPENAI_API_KEY on Render.");
-
-    rtc=new RTCPeerConnection();
-    dc=rtc.createDataChannel("oai-events");
-
-    dc.onopen=()=>sendSessionConfig();
-    dc.onerror=()=>console.warn("Realtime data channel error");
-    dc.onmessage=e=>{
-      try{
-        const event=JSON.parse(e.data);
-        if(event.type==="error") console.error("Realtime error:",event);
-      }catch{}
-    };
-
-    audioEl=document.createElement("audio");
-    audioEl.autoplay=true;
-    audioEl.playsInline=true;
-    audioEl.setAttribute("playsinline","");
-    audioEl.setAttribute("aria-hidden","true");
-    document.body.appendChild(audioEl);
-
-    rtc.ontrack=e=>{
-      if(e.streams?.[0]){
-        audioEl.srcObject=e.streams[0];
-        audioEl.play().catch(()=>{});
-      }
-    };
-
-    rtc.onconnectionstatechange=()=>{
-      const s=rtc.connectionState;
-      if(s==="connected"){
-        voiceConnected=true;
-        setState("LISTENING",true);
-      }else if(["failed","disconnected","closed"].includes(s)){
-        if(s==="failed") setState("VOICE CONNECTION FAILED");
-        stopRealtimeVoice(true);
-      }
-    };
-
-    localStream.getTracks().forEach(t=>rtc.addTrack(t,localStream));
-
-    const offer=await rtc.createOffer();
-    await rtc.setLocalDescription(offer);
-
-    const sdpRes=await fetch("https://api.openai.com/v1/realtime/calls",{
-      method:"POST",
-      headers:{
-        "Authorization":"Bearer "+tokenData.value,
-        "Content-Type":"application/sdp"
-      },
-      body:offer.sdp
-    });
-
-    if(!sdpRes.ok) throw new Error(await sdpRes.text()||("Realtime connection failed ("+sdpRes.status+")."));
-
-    const answer=await sdpRes.text();
-    await rtc.setRemoteDescription({type:"answer",sdp:answer});
-  }catch(e){
-    console.error("JARVIS voice error:",e);
-    const msg=String(e?.message||e).replace(/\s+/g," ").slice(0,90);
-    setState(msg||"VOICE UNAVAILABLE");
-    cleanupVoice();
-  }
-}
-
-function cleanupVoice(){
-  if(localStream) localStream.getTracks().forEach(t=>t.stop());
-  if(rtc) rtc.close();
-  if(audioEl){audioEl.pause();audioEl.srcObject=null;audioEl.remove();audioEl=null;}
-  localStream=null;rtc=null;dc=null;voiceConnected=false;
-  $("mic").classList.remove("active");
-  $("core").classList.remove("active");
-  $("statusText").textContent="READY";
-  $("micLabel").textContent="TAP TO SPEAK";
-}
-
-function stopRealtimeVoice(keepMessage=false){
-  cleanupVoice();
-  if(!keepMessage) setState("READY");
-}
-
-$("mic").onclick=()=>{
-  if(voiceConnected) stopRealtimeVoice();
-  else startRealtimeVoice();
-};
-
-window.addEventListener("pagehide",()=>cleanupVoice());
+$("mic").addEventListener("click",startVoice);
+window.addEventListener("pagehide",()=>{
+  try{recognition?.stop();}catch{}
+  if("speechSynthesis" in window) speechSynthesis.cancel();
+});
+if("speechSynthesis" in window) speechSynthesis.getVoices();
