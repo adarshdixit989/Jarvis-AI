@@ -1,31 +1,41 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>JARVIS AI — Personal Assistant</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JARVIS AI — Voice Assistant</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="bg"></div>
-<header><div class="brand"><span class="orb"></span><div><b>JARVIS</b><small>PERSONAL AI ASSISTANT</small></div></div><span class="status"><i></i> ONLINE</span></header>
+<header>
+  <div class="brand"><span class="orb"></span><div><b>JARVIS</b><small>PERSONAL AI ASSISTANT</small></div></div>
+  <span class="status"><i></i><span id="statusText">READY</span></span>
+</header>
+
 <main>
-<section class="hero">
-<div class="core"><div class="ring r1"></div><div class="ring r2"></div><div class="core-dot"></div><div class="pulse"></div></div>
-<h1>Good day, <span>Adarsh.</span></h1><p id="subtitle">Your intelligent command center is ready.</p>
-<button id="mic" class="mic">🎙 <span>Speak to JARVIS</span></button>
-<div class="hint">Try: “What time is it?” · “Search Python” · “Open YouTube”</div>
-</section>
-<section class="panel">
-<div class="panel-head"><span>COMMAND CONSOLE</span><span id="clock">--:--:--</span></div>
-<div id="messages" class="messages"><div class="msg jarvis"><b>JARVIS</b><p>Systems initialized. How may I assist you?</p></div></div>
-<form id="commandForm"><input id="command" autocomplete="off" placeholder="Type a command…"><button>RUN</button></form>
-</section>
-<section class="cards">
-<div><small>VOICE</small><strong id="voiceState">READY</strong><p>Browser speech recognition</p></div>
-<div><small>MODE</small><strong>DEMO + AI</strong><p>Safe web assistant interface</p></div>
-<div><small>PROJECT</small><strong>PYTHON</strong><p>Desktop engine in repository</p></div>
-</section>
+  <section class="hero">
+    <div class="core" id="core">
+      <div class="ring r1"></div>
+      <div class="ring r2"></div>
+      <div class="core-dot"></div>
+      <div class="pulse"></div>
+    </div>
+
+    <h1>Good day, <span>Adarsh.</span></h1>
+    <p id="subtitle">Your voice command center is ready.</p>
+
+    <button id="mic" class="mic" type="button">
+      <span class="mic-icon">🎙</span>
+      <span id="micLabel">TAP TO SPEAK</span>
+    </button>
+
+    <div class="voice-only">VOICE ONLY · NO TEXT TRANSCRIPT</div>
+    <div id="voiceState" class="voice-state">READY</div>
+  </section>
 </main>
-<footer>JARVIS AI · Built with Python, Speech Recognition, TTS & LLM</footer>
+
+<footer>JARVIS AI · REALTIME VOICE ASSISTANT</footer>
 <script src="app.js"></script>
-</body></html>
+</body>
+</html>
