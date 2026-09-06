@@ -59,16 +59,74 @@ async function run(v, voiceMode=false){
 $("commandForm").addEventListener("submit",e=>{e.preventDefault();const v=$("command").value;$("command").value="";run(v);});
 setInterval(()=>$("clock").textContent=new Date().toLocaleTimeString(),1000);
 
-let rec=null;
-if("SpeechRecognition"in window||"webkitSpeechRecognition"in window){
-  const R=window.SpeechRecognition||window.webkitSpeechRecognition;
-  rec=new R(); rec.lang="en-IN"; rec.interimResults=false; rec.continuous=false;
-  rec.onstart=()=>{$("voiceState").textContent="LISTENING";$("mic").querySelector("span").textContent="Listening…";};
-  rec.onend=()=>{$("voiceState").textContent="READY";$("mic").querySelector("span").textContent="Speak to JARVIS";};
-  rec.onerror=e=>{console.error(e);$("voiceState").textContent="READY";};
-  rec.onresult=e=>run(e.results[0][0].transcript,true);
-}else $("voiceState").textContent="NOT SUPPORTED";
-$("mic").onclick=()=>{if(rec){try{rec.start();}catch(e){}}else alert("Voice recognition is not supported here. Try Chrome or Edge.");};
+let rtc=null;
+let localStream=null;
+let audioEl=null;
+let voiceConnected=false;
 
-// Developer helper: set the backend once in the browser console:
-// localStorage.setItem("jarvis_api_url","https://YOUR-BACKEND-URL");
+async function startRealtimeVoice(){
+  if(voiceConnected) return;
+  try{
+    $("voiceState").textContent="CONNECTING";
+    const tokenRes=await fetch(API_BASE+"/api/realtime-token",{method:"POST"});
+    const tokenData=await tokenRes.json();
+    if(!tokenData.value) throw new Error(tokenData.error||"No realtime token");
+
+    rtc=new RTCPeerConnection();
+    audioEl=document.createElement("audio");
+    audioEl.autoplay=true;
+    document.body.appendChild(audioEl);
+    rtc.ontrack=e=>{ audioEl.srcObject=e.streams[0]; };
+    rtc.onconnectionstatechange=()=>{
+      if(rtc.connectionState==="connected"){
+        voiceConnected=true;
+        $("voiceState").textContent="LISTENING";
+        $("mic").querySelector("span").textContent="JARVIS is listening…";
+      }else if(["failed","disconnected","closed"].includes(rtc.connectionState)){
+        voiceConnected=false;
+        $("voiceState").textContent="READY";
+        $("mic").querySelector("span").textContent="Speak to JARVIS";
+      }
+    };
+
+    localStream=await navigator.mediaDevices.getUserMedia({audio:true});
+    localStream.getTracks().forEach(t=>rtc.addTrack(t,localStream));
+
+    const offer=await rtc.createOffer();
+    await rtc.setLocalDescription(offer);
+
+    const sdpRes=await fetch("https://api.openai.com/v1/realtime/calls",{
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer "+tokenData.value,
+        "Content-Type":"application/sdp"
+      },
+      body:offer.sdp
+    });
+    if(!sdpRes.ok) throw new Error("Realtime connection failed: "+sdpRes.status);
+    const answer=await sdpRes.text();
+    await rtc.setRemoteDescription({type:"answer",sdp:answer});
+  }catch(e){
+    console.error(e);
+    $("voiceState").textContent="ERROR";
+    $("mic").querySelector("span").textContent="Voice unavailable — tap to retry";
+    if(localStream) localStream.getTracks().forEach(t=>t.stop());
+    if(rtc) rtc.close();
+    voiceConnected=false;
+  }
+}
+
+function stopRealtimeVoice(){
+  if(localStream) localStream.getTracks().forEach(t=>t.stop());
+  if(rtc) rtc.close();
+  if(audioEl){audioEl.remove();audioEl=null;}
+  localStream=null; rtc=null; voiceConnected=false;
+  $("voiceState").textContent="READY";
+  $("mic").querySelector("span").textContent="Speak to JARVIS";
+}
+
+$("mic").onclick=()=>{
+  if(voiceConnected) stopRealtimeVoice();
+  else startRealtimeVoice();
+};
+// Backend is configured for the deployed Render API.
