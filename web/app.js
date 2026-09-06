@@ -28,6 +28,10 @@ function localRespond(raw){
   return "I can answer that when the AI backend is connected. The live dashboard is currently running in safe demo mode.";
 }
 async function aiRespond(raw){
+  // Handle simple commands instantly in the browser (no network round-trip).
+  const c=raw.toLowerCase().trim();
+  const instant = c.includes("time") || c.includes("date") || c.includes("open youtube") || c.startsWith("search ") || c.includes("hello") || c.includes("hi jarvis") || c.includes("how are you") || c.includes("who are you") || c.includes("help");
+  if(instant) return localRespond(raw);
   if(!API_BASE) return localRespond(raw);
   try{
     const r=await fetch(API_BASE+"/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:raw})});
@@ -39,11 +43,15 @@ async function aiRespond(raw){
     return localRespond(raw)+" (AI backend is currently unavailable.)";
   }
 }
-async function run(v){
+async function run(v, voiceMode=false){
   v=v.trim(); if(!v) return;
-  add("user",v);
-  const pending="Thinking…"; add("jarvis",pending);
-  const last=messages.lastElementChild;
+  // Voice mode is speech-first: do not render the transcript/answer in the console.
+  if(!voiceMode) add("user",v);
+  let last=null;
+  if(!voiceMode){
+    add("jarvis","Thinking…");
+    last=messages.lastElementChild;
+  }
   const reply=await aiRespond(v);
   if(last) last.querySelector("p").textContent=reply;
   speak(reply);
@@ -58,7 +66,7 @@ if("SpeechRecognition"in window||"webkitSpeechRecognition"in window){
   rec.onstart=()=>{$("voiceState").textContent="LISTENING";$("mic").querySelector("span").textContent="Listening…";};
   rec.onend=()=>{$("voiceState").textContent="READY";$("mic").querySelector("span").textContent="Speak to JARVIS";};
   rec.onerror=e=>{console.error(e);$("voiceState").textContent="READY";};
-  rec.onresult=e=>run(e.results[0][0].transcript);
+  rec.onresult=e=>run(e.results[0][0].transcript,true);
 }else $("voiceState").textContent="NOT SUPPORTED";
 $("mic").onclick=()=>{if(rec){try{rec.start();}catch(e){}}else alert("Voice recognition is not supported here. Try Chrome or Edge.");};
 
